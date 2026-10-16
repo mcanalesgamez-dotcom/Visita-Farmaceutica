@@ -1,0 +1,106 @@
+from fastapi import FastAPI, HTTPException, Depends
+from pydantic import BaseModel
+from sqlalchemy import create_backend, create_engine, Column, Integer, String, Float, ForeignKey, DateTime
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+from datetime import datetime
+from typing import List
+
+# 1. Configuración de la Base de Datos (SQLite local)
+DATABASE_URL = "sqlite:///./visita_farmaceutica.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# 2. Modelos de la Base de Datos (SQLAlchemy)
+class Medico(Base):
+    __tablename__ = "medicos"
+    id = Column(Integer, primary_key=True, index=True)
+    nombre = Column(String, index=True)
+    especialidad = Column(String)
+    direccion = Column(String)
+    potencial_prescripcion = Column(String)  # Alta, Media, Baja
+
+class Planificacion(Base):
+    __tablename__ = "planificaciones"
+    id = Column(Integer, primary_key=True, index=True)
+    medico_id = Column(Integer, ForeignKey("medicos.id"))
+    fecha_planificada = Column(String)
+    estado = Column(String, default="Pendiente")  # Pendiente, Visitado
+
+class ReporteVisita(Base):
+    __tablename__ = "reportes_visitas"
+    id = Column(Integer, primary_key=True, index=True)
+    planificacion_id = Column(Integer, ForeignKey("planificaciones.id"))
+    fecha_visita = Column(DateTime, default=datetime.utcnow)
+    latitud_checkin = Column(Float)
+    longitud_checkin = Column(Float)
+    comentarios = Column(String)
+
+# Crear las tablas en la base de datos
+Base.metadata.create_all(bind=engine)
+
+# 3. Inicializar FastAPI
+app = FastAPI(title="Sistema de Control de Visita Farmacéutica")
+
+# Dependencia para obtener la sesión de BD
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# 4. Esquemas de Validación (Pydantic)
+class MedicoCreate(BaseModel):
+    nombre: str
+    especialidad: str
+    direccion: str
+    potencial_prescripcion: str
+
+class PlanificacionCreate(BaseModel):
+    medico_id: int
+    fecha_planificada: str
+
+class ReporteCreate(BaseModel):
+    planificacion_id: int
+    latitud_checkin: float
+    longitud_checkin: float
+    comentarios: str
+
+# 5. Endpoints (Rutas de la API)
+@app.post("/medicos/")
+def crear_medico(medico: MedicoCreate, db: Session = Depends(get_db)):
+    nuevo_medico = Medico(**medico.dict())
+    db.add(nuevo_medico)
+    db.commit()
+    db.refresh(nuevo_medico)
+    return nuevo_medico
+
+@app.post("/planificaciones/")
+def crear_planificacion(plan: PlanificacionCreate, db: Session = Depends(get_db)):
+    nueva_plan = Planificacion(**plan.dict())
+    db.add(nueva_plan)
+    db.commit()
+    db.refresh(nueva_plan)
+    return nueva_plan
+
+@app.post("/reportes/")
+def registrar_visita(reporte: ReporteCreate, db: Session = Depends(get_db)):
+    # Verificar si la planificación existe
+    plan = db.query(Planificacion).filter(Planificacion.id == reporte.planificacion_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Planificación no encontrada")
+    
+    # Cambiar estado de la planificación a Visitado
+    plan.estado = "Visitado"
+    
+    nuevo_reporte = ReporteVisita(**reporte.dict())
+    db.add(nuevo_reporte)
+    db.commit()
+    db.refresh(nuevo_reporte)
+    return {"status": "Visita reportada con éxito", "data": nuevo_reporte}
+
+@app.get("/")
+def inicio():
+    return {"mensaje": "API de Control Farmacéutico en ejecución"}
